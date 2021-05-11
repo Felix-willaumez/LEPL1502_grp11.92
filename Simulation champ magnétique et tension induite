@@ -1,0 +1,205 @@
+
+from numpy import *
+from scipy.spatial import Delaunay
+ 
+# ------------------------------------------------------------------------------------
+#
+# Intégration du flux magnétique
+#
+#    Xmagnet,Ymagnet : tableaux numpy des coordonnées x,z des sommets  de l'aimant 
+#    Zmagnet : scalaire contenant la hauteur du l'aimant
+#    Xcoil,Ycoil : tableaux numpy des coordonnées x,z des sommets de la bobine
+#    triangles : tableau contenant les indices des 3 sommets de chaque élément
+#    Xshift : tableau numpy contenant les translation de l'aimant sur une période
+#    mu0 : perméabilité du vide
+#    mu  : valeur absolue de la composante z du momemt magnétique du l'aimant = [0,0,-mu]
+#   
+#  La fonction renvoie un vecteur phi contenant le flux du champs magnétique intercepté
+#  par une spire exprimé en [T cm2]
+#
+ 
+def magneticField(X,Y,Zmagnet,Xmagnet,Ymagnet,mu0,mu,Xshift,i,triangles):
+    Bx = 0
+    Bz = 0
+    Xdipole = mean(Xmagnet[triangles[:,:]],axis=1)
+    Ydipole = mean(Ymagnet[triangles[:,:]],axis=1)
+    X = broadcast_to(X,(size(Xdipole),size(Xdipole)))
+    Y = broadcast_to(Y,(size(Xdipole),size(Xdipole)))
+    area = 0.5*abs(Xmagnet[triangles][:,0]*(Ymagnet[triangles][:,1]-Ymagnet[triangles][:,2])+ Xmagnet[triangles][:,1]*(Ymagnet[triangles][:,2]-Ymagnet[triangles][:,0]) + Xmagnet[triangles][:,2]*(Ymagnet[triangles][:,0]-Ymagnet[triangles][:,1]))
+    AreaMagnet = sum(area)
+    coeff1 = -(mu0*mu) / (4*pi*AreaMagnet)
+    Xp = X - Xdipole.reshape(1,size(Xdipole),1) - Xshift[i]
+    Yp = Y - Ydipole.reshape(1,size(Ydipole),1)
+    Zp = Zmagnet
+    r     = sqrt(Xp*Xp + Yp*Yp + Zp*Zp)
+    coeff2 = 1/ (r**5)
+    Bz   = sum(coeff1*coeff2*(3*Zp*Zp - r*r)*area,axis=0)
+    return Bz 
+
+
+
+# ------------------------------------------------------------------------------------ 
+
+def magnetComputeInduction(Xmagnet,Ymagnet,Zmagnet,Xcoil,Ycoil,triangles,Xshift,mu0,mu) :
+  phi = zeros(size(Xshift))
+  for b in range(size(Xshift)):
+      X = mean(Xcoil[triangles[:,:]],axis=1)
+      Y = mean(Ycoil[triangles[:,:]],axis=1)
+      area = 0.5*abs(Xcoil[triangles][:,0]*(Ycoil[triangles][:,1]-Ycoil[triangles][:,2])+ Xcoil[triangles][:,1]*(Ycoil[triangles][:,2]-Ycoil[triangles][:,0]) + Xcoil[triangles][:,2]*(Ycoil[triangles][:,0]-Ycoil[triangles][:,1]))
+      phi[b] = sum(magneticField(X,Y,Zmagnet,Xmagnet,Ymagnet,mu0,mu,Xshift,b,triangles)*area)
+  return phi
+
+# ------------------------------------------------------------------------------------ 
+
+# ------------------------------------------------------------------------------------ 
+#
+# Script de test
+#
+#
+# -0- Paramètres matériels
+#
+# ------------------------------------------------------------------------------------
+ 
+ 
+mu0     = 4e-7*pi*1e-2     # permeabilité du vide en [H/cm] 
+Rmagnet = 1.25             # rayon de l'aimant [cm]
+Hmagnet = 0.6              # épaisseur de l'aimant [cm]
+Zmagnet = 0.5              # position verticale de l'aimant en [cm]
+Br      = 1.4              # magnetisation residuelle du Néodyme fer bore (NdFeB) en [T] ou [kg/(A s)]
+mu      = Rmagnet**2*Hmagnet*pi*Br / mu0    
+                           # moment magnétique de l'aimant [A cm2]
+Rcoil   = 1                # rayon de la bobine [cm]
+nSpires = 200
+ 
+ 
+ 
+# ------------------------------------------------------------------------------------
+#
+# -1- Construction d'un maillage de triangles pour un cercle de rayon unitaire
+#
+# ------------------------------------------------------------------------------------
+ 
+ 
+nR      = 6
+nTheta  = 6
+nNode   = 1 + sum(arange(1,nR))*nTheta
+R     = zeros(nNode)
+Theta = zeros(nNode)
+ 
+index = 1; dR = 1.0/(nR-1)
+for i in range(1,nR):
+    dTheta = 2*pi/(i*nTheta)
+    for j in range(0,i*nTheta):
+        R[index]     = i*dR
+        Theta[index] = j*dTheta; index += 1
+ 
+X       = R*cos(Theta)
+Y       = R*sin(Theta)
+
+triangles = Delaunay(stack((X,Y),1)).simplices
+nElem = len(triangles)
+ 
+print(" Number of triangles : %d " % nElem)
+print(" Number of nodes     : %d " % nNode)
+ 
+ 
+# ------------------------------------------------------------------------------------
+#
+# -2- Calcul du flux et de la tension induite dans la bobine
+#
+# ------------------------------------------------------------------------------------
+
+m       = 41
+Xstart  = -5                   # [cm]
+Xstop   =  5                     # [cm]
+Xshift  = linspace(Xstart,Xstop,m)
+Tstart  = 0                         # [s]
+Tstop   = 0.5                       # [s]
+T,delta = linspace(Tstart,Tstop,m,retstep=True)
+ 
+Xmagnet = Rmagnet*R*cos(Theta)
+Ymagnet = Rmagnet*R*sin(Theta) 
+Xcoil   = Rcoil*R*cos(Theta)
+Ycoil   = Rcoil*R*sin(Theta) 
+
+phi =  magnetComputeInduction(Xmagnet,Ymagnet,Zmagnet,Xcoil,Ycoil,triangles,
+                                                                   Xshift,mu0,mu)  
+ 
+phi     = phi * nSpires    
+voltage = - diff(phi) / (delta*10)
+
+# ------------------------------------------------------------------------------------
+#
+# -3- Quelques jolis plots et animation
+#
+# ------------------------------------------------------------------------------------
+
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+
+plt.rcParams['toolbar'] = 'None'
+
+
+def frame(i):
+    plt.clf()
+
+    n = 50
+    X, Z = meshgrid(linspace(-2, 2, n), linspace(-2, 2, n))
+    Y = zeros_like(X)
+    Bx = zeros(shape(X))
+    Bz = zeros(shape(X))
+
+    for iElem in range(nElem):
+        Xp = X - Xdipole[iElem] - Xshift[i]
+        Yp = Y - Ydipole[iElem]
+        Zp = Z - Zmagnet
+        r = sqrt(Xp * Xp + Yp * Yp + Zp * Zp)
+        coeff = -(mu0 * mu) / (4 * pi * r ** 5)
+        Bx += coeff * (3 * Zp * Xp)
+        Bz += coeff * (3 * Zp * Zp - r * r)
+    plt.streamplot(X, Z, Bx, Bz, density=1.4, linewidth=None, color='blue')
+
+    x = array([-Rmagnet, Rmagnet, Rmagnet, -Rmagnet, -Rmagnet]) + Xshift[i]
+    y = array([0, 0, Hmagnet, Hmagnet, 0]) + Zmagnet - Hmagnet / 2.0
+    plt.fill(x, y, facecolor='blue', alpha=1)
+
+    x = [-Rcoil, Rcoil]
+    y = [0, 0]
+    plt.plot(x, y, "-r", linewidth=4)
+
+    plt.xlim((-2, 2));
+    plt.ylim((-2, 2))
+    plt.title('Electromagnetic Field')
+
+
+# ------------------------------------------------------------------------------------
+
+fig = plt.figure("Maillage de l'aimant")
+plt.plot(Xmagnet, Ymagnet, 'or')
+plt.triplot(Xmagnet, Ymagnet, triangles, '-k')
+Xdipole = mean(Xmagnet[triangles[:, :]], axis=1)
+Ydipole = mean(Ymagnet[triangles[:, :]], axis=1)
+plt.plot(Xdipole, Ydipole, 'ob')
+
+plt.axis("equal")
+plt.axis("off")
+
+plt.figure("Flux et tension induite sur une période")
+plt.plot(T, phi, '-r')
+plt.plot(T[1:], voltage, '-b')
+plt.text(0.01, -100, "$N\phi(t)$ [T cm$^2$]", color='red', fontsize=12)
+plt.text(0.3, 100, r"$-N\dfrac{\partial \phi}{\partial t}(t)$ [mV]", color='blue', fontsize=12)
+plt.text(0.4, -210, "time [s]", color='black', fontsize=12)
+
+plt.figure("Un joli plot pour le coordinateur :-)", figsize=(10, 10))
+frame(20)
+
+movie = animation.FuncAnimation(plt.figure("Claude's project", figsize=(10, 10)), frame, 41, interval=20, repeat=False)
+plt.show()
+
+ 
+ 
+ 
+ 
+ 
+ 
